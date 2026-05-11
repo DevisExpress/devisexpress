@@ -111,7 +111,206 @@ function openCustomItem(){const m=draft.metiers[activeMetierTab];sheet(`<h3>➕ 
 function addCustomItem(){const name=val('xName'),price=parseFloat(val('xPrice')),unit=val('xUnit')||'forfait',qty=parseFloat(val('xQty'))||1;if(!name||!price)return toast('⚠️ Désignation et prix obligatoires');const metier=draft.metiers[activeMetierTab]||data.pro.metier;draft.items.push({key:metier+'__'+name+'__custom_'+Date.now(),metier,name,price,unit,qty});closeModal();renderQuote();toast('✅ Prestation ajoutée')}
 function previewHtml(q,withActions){const t=totals(q),exp=new Date(q.date);exp.setDate(exp.getDate()+(data.pro.validity||30));const isInv=!!q.invoiceId,docTitle=isInv?'Facture':'Devis';const rows=(q.items||[]).map(i=>`<tr><td>${i.metier?'<strong style="color:#111827">'+esc(i.metier)+'</strong><br>':''}${esc(i.name)}</td><td style="text-align:center">${esc(i.qty)}</td><td>${esc(i.unit)}</td><td style="text-align:right">${fmtEUR(i.price)}</td><td style="text-align:right;font-weight:bold">${fmtEUR(i.price*i.qty)}</td></tr>`).join('')||'<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:12px">Aucune prestation</td></tr>';return`<div class="pdf"><div class="pdf-head"><div><div class="pdf-logo">${esc(data.pro.company||'DevisExpress')}<span>.</span></div><div class="pdf-muted" style="margin-top:5px"><strong style="color:#111827">${esc((q.metiers||[data.pro.metier]).join(' · '))}</strong><br>${esc(data.pro.phone||'')}<br>${esc(data.pro.email||'')}<br>${data.pro.siret?'SIRET : '+esc(data.pro.siret):''}<br>${esc(data.pro.address||'')}</div></div><div class="pdf-muted" style="text-align:right"><strong style="color:#111827;font-size:16px">${docTitle} ${esc(q.invoiceId||q.id)}</strong><br>Date : ${new Date(q.date).toLocaleDateString('fr-FR')}<br>${isInv?'Payée le':'Validité'} : ${isInv?new Date(q.paidAt||Date.now()).toLocaleDateString('fr-FR'):exp.toLocaleDateString('fr-FR')}<br>Statut : ${statusLabel(q.status)}</div></div><div class="pdf-title">Client</div><div class="pdf-block"><strong>${esc(q.client.name||'Client')}</strong><br>${esc(q.client.address||'Adresse non renseignée')}<br>${q.client.phone?'Tél : '+esc(q.client.phone):''}${q.client.email?' · '+esc(q.client.email):''}</div>${q.note?`<div class="pdf-title">Notes</div><div class="pdf-block">${esc(q.note)}</div>`:''}<div class="pdf-title">Détail des prestations</div><table class="pdf-table"><thead><tr><th>Prestation</th><th style="text-align:center">Qté</th><th>Unité</th><th style="text-align:right">P.U. HT</th><th style="text-align:right">Total HT</th></tr></thead><tbody>${rows}</tbody></table><div class="pdf-totals"><div>Sous-total HT : <strong>${fmtEUR(t.ht)}</strong></div><div>TVA ${data.pro.tva}% : <strong>${fmtEUR(t.tva)}</strong></div><div class="pdf-final">Total TTC : ${fmtEUR(t.ttc)}</div></div><div class="pdf-sign"><div class="pdf-muted"><strong>${esc(data.pro.company||data.pro.name)}</strong><br>${esc(data.pro.address||'')}</div><div style="text-align:center"><div style="font-size:9px;color:#64748b;margin-bottom:4px">${isInv?'Facture acquittée':'Bon pour accord – Signature client'}</div><div class="sign-box">${isInv?'Payé':'Signature + date'}</div></div></div><div class="pdf-title">Conditions</div><div class="pdf-block">${esc(data.pro.terms||'Devis valable 30 jours.')}</div><div class="pdf-footer">Document généré avec DevisExpress</div></div>${withActions?`<div class="actions"><button class="btn btn-ghost" onclick="goStep(2)">← Modifier</button><button class="btn btn-ghost" onclick="downloadPDF(draft)">📄 PDF</button><button class="btn btn-green" onclick="saveAndShare()">📤 Enregistrer</button></div>`:''}`}
 function saveAndShare(){flushClient();if(!draft.client.name)return toast('⚠️ Nom client obligatoire');if(!draft.items.length)return toast('⚠️ Ajoute au moins une prestation');draft.status='sent';const idx=data.quotes.findIndex(x=>x.id===draft.id);if(idx>=0)data.quotes[idx]=JSON.parse(JSON.stringify(draft));else data.quotes.push(JSON.parse(JSON.stringify(draft)));if(!data.clients.some(c=>c.name.toLowerCase()===draft.client.name.toLowerCase()))data.clients.push({...draft.client});save();const saved=data.quotes.find(x=>x.id===draft.id);toast('✅ Devis sauvegardé');startQuote();if(saved)openShareModal(saved);renderAll()}
-function downloadPDF(q){const html='<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>'+esc(q.invoiceId||q.id)+'</title><style>body{font-family:Arial,sans-serif;color:#111827;padding:22px;font-size:11px}.pdf{box-shadow:none}.actions{display:none}</style></head><body>'+previewHtml(q,false)+'<script>window.onload=function(){setTimeout(function(){window.print()},500)}<\/script></body></html>';const w=window.open('','_blank','width=820,height=1060');if(w){w.document.write(html);w.document.close()}else toast('⚠️ Autorisez les popups pour le PDF')}
+function downloadPDF(q){
+
+  const css = `
+    @page{
+      size:A4;
+      margin:0;
+    }
+
+    *{
+      box-sizing:border-box;
+    }
+
+    body{
+      margin:0;
+      background:#e5e7eb;
+      font-family:Arial,Helvetica,sans-serif;
+      -webkit-print-color-adjust:exact!important;
+      print-color-adjust:exact!important;
+    }
+
+    .pdf{
+      width:794px;
+      min-height:1123px;
+      margin:0 auto;
+      background:white;
+      color:#111827;
+      border-radius:0;
+      padding:48px;
+      box-shadow:none;
+      font-family:Arial,Helvetica,sans-serif;
+    }
+
+    .pdf-head{
+      display:flex;
+      justify-content:space-between;
+      gap:18px;
+      border-bottom:3px solid #111827;
+      padding-bottom:22px;
+      margin-bottom:24px;
+    }
+
+    .pdf-logo{
+      font-weight:900;
+      font-size:28px;
+      color:#111827;
+    }
+
+    .pdf-logo span{
+      color:#f59e0b;
+    }
+
+    .pdf-muted{
+      color:#64748b;
+      font-size:13px;
+      line-height:1.7;
+    }
+
+    .pdf-block{
+      background:#f8fafc;
+      border-left:4px solid #f59e0b;
+      border-radius:0 12px 12px 0;
+      padding:14px 16px;
+      font-size:13px;
+      line-height:1.7;
+      color:#374151;
+    }
+
+    .pdf-title{
+      font-size:12px;
+      color:#64748b;
+      text-transform:uppercase;
+      letter-spacing:1px;
+      margin:22px 0 10px;
+      font-weight:700;
+    }
+
+    .pdf-table{
+      width:100%;
+      border-collapse:collapse;
+      font-size:12px;
+    }
+
+    .pdf-table th{
+      background:#111827;
+      color:white;
+      text-align:left;
+      padding:10px;
+    }
+
+    .pdf-table td{
+      border-bottom:1px solid #e5e7eb;
+      padding:10px;
+      color:#374151;
+    }
+
+    .pdf-totals{
+      display:flex;
+      flex-direction:column;
+      align-items:flex-end;
+      gap:6px;
+      margin-top:18px;
+      font-size:14px;
+      color:#374151;
+    }
+
+    .pdf-final{
+      font-size:24px;
+      font-weight:900;
+      border-top:3px solid #111827;
+      padding-top:8px;
+      color:#111827;
+    }
+
+    .pdf-sign{
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-end;
+      margin-top:26px;
+      padding-top:18px;
+      border-top:1px solid #e5e7eb;
+      font-size:12px;
+      color:#64748b;
+    }
+
+    .sign-box{
+      border:2px dashed #cbd5e1;
+      border-radius:10px;
+      width:170px;
+      height:58px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:11px;
+      color:#94a3b8;
+      text-align:center;
+    }
+
+    .pdf-footer{
+      border-top:1px solid #e5e7eb;
+      margin-top:22px;
+      padding-top:14px;
+      text-align:center;
+      color:#94a3b8;
+      font-size:11px;
+    }
+
+    .actions{
+      display:none!important;
+    }
+
+    @media print{
+      body{
+        background:white;
+      }
+
+      .pdf{
+        margin:0;
+        width:100%;
+        min-height:100vh;
+      }
+    }
+  `;
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+      <meta charset="UTF-8">
+      <title>${esc(q.invoiceId || q.id)}</title>
+      <style>${css}</style>
+    </head>
+
+    <body>
+      ${previewHtml(q,false)}
+
+      <script>
+        window.onload = function(){
+          setTimeout(function(){
+            window.print();
+          },500);
+        }
+      <\/script>
+    </body>
+    </html>
+  `;
+
+  const w = window.open(
+    '',
+    '_blank',
+    'width=900,height=1200'
+  );
+
+  if(w){
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+  }else{
+    toast('⚠️ Autorisez les popups pour générer le PDF');
+  }
+};color:#111827;padding:22px;font-size:11px}.pdf{box-shadow:none}.actions{display:none}</style></head><body>'+previewHtml(q,false)+'<script>window.onload=function(){setTimeout(function(){window.print()},500)}<\/script></body></html>';const w=window.open('','_blank','width=820,height=1060');if(w){w.document.write(html);w.document.close()}else toast('⚠️ Autorisez les popups pour le PDF')}
 function openShareModal(q){const t=totals(q),tel=(q.client.phone||'').replace(/\D/g,'').replace(/^0/,'+33'),msg=`Bonjour ${q.client.name},\n\nVeuillez trouver votre ${q.invoiceId?'facture':'devis'} ${q.invoiceId||q.id} pour un montant de ${fmtEUR(t.ttc)} TTC.\n\n${q.invoiceId?'Facture acquittée.':'Ce devis est valable '+(data.pro.validity||30)+' jours.'}\n\nCordialement,\n${data.pro.company||data.pro.name}\n${data.pro.phone||''}`;sheet(`<h3>📤 Envoyer le document</h3><p class="small">${esc(q.invoiceId||q.id)} · <strong>${esc(q.client.name)}</strong> · ${fmtEUR(t.ttc)}</p><div class="share-opts"><div class="share-opt" onclick="downloadPDFById('${attr(q.id)}')"><div class="share-opt-icon">1️⃣</div><div><strong>Générer le PDF</strong><span>À enregistrer ou joindre ensuite</span></div></div><div class="share-opt" onclick="window.open('https://wa.me/${tel}?text=${encodeURIComponent(msg)}','_blank');closeModal()"><div class="share-opt-icon">💬</div><div><strong>WhatsApp</strong><span>Message prérempli</span></div></div><div class="share-opt" onclick="window.location.href='mailto:${attr(q.client.email||'')}?subject=${encodeURIComponent((q.invoiceId?'Facture ':'Devis ')+(q.invoiceId||q.id))}&body=${encodeURIComponent(msg)}';closeModal()"><div class="share-opt-icon">📧</div><div><strong>Email</strong><span>Mail pré-rempli</span></div></div></div><p class="small" style="margin-top:12px">Note : WhatsApp et Mail ne peuvent pas recevoir automatiquement une pièce jointe depuis GitHub Pages. Il faut générer le PDF puis le joindre.</p><button class="btn btn-ghost full" style="margin-top:12px" onclick="closeModal()">Fermer</button>`)}
 function downloadPDFById(id){const q=data.quotes.find(x=>x.id===id);if(q)downloadPDF(q)}
 function shareQuote(id){const q=data.quotes.find(x=>x.id===id);if(q)openShareModal(q)}
