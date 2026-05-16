@@ -318,6 +318,9 @@ textarea.field{min-height:88px;resize:vertical}
 /* ── HELPERS ── */
 const LS='devisexpress_v4_state';
 const money=n=>Number(n||0).toLocaleString('fr-FR',{style:'currency',currency:'EUR'});
+// Version PDF-safe : remplace les espaces insécables (U+00A0, U+202F) par des espaces ASCII
+// que la police Helvetica de jsPDF sait afficher
+const pdfMoney=n=>money(n).replace(/[\u00a0\u202f]/g,' ');
 const today=()=>new Date().toISOString().slice(0,10);
 const uid=()=>Math.random().toString(36).slice(2,9).toUpperCase();
 const esc=s=>String(s??'').replace(/[&<>'"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":"&#39;",'"':'&quot;'}[m]));
@@ -591,17 +594,20 @@ window.partagerLienWA=function(id,lien){
 
 function genValidationLink(q){
   const c=state.company;
-  const payload={
-    ref:q.number,titre:q.title||'',
-    client_nom:q.client?.name||'—',
-    artisan_nom:c.name||c.firstName||'Artisan',
-    artisan_metier:theme().label,
-    artisan_tel:c.phone||'',
-    total_ttc:q.totalTTC,
-    date_validite:q.date?new Date(new Date(q.date).getTime()+(q.validity||30)*86400000).toISOString().slice(0,10):'',
-    lignes:(q.items||[]).map(it=>({description:it.name,montant:(it.qty||1)*(it.price||0)*(1+(Number(state.settings.vat)||0)/100)}))
+  // Payload minimal avec clés courtes — sans les lignes détaillées
+  // Résultat : URL ~5x plus courte (lisible dans WhatsApp)
+  const p={
+    r:q.number,
+    ti:(q.title||'').slice(0,50),
+    cn:((q.client&&q.client.name)||'').slice(0,30),
+    an:(c.name||c.firstName||'Artisan').slice(0,30),
+    am:theme().label,
+    at:(c.phone||'').slice(0,15),
+    m:Math.round((q.totalTTC||0)*100)/100,
+    dv:q.date?new Date(new Date(q.date).getTime()+(q.validity||30)*86400000).toISOString().slice(0,10):''
   };
-  const encoded=btoa(encodeURIComponent(JSON.stringify(payload)));
+  // btoa sur UTF-8 propre (sans double-encodeURIComponent)
+  const encoded=btoa(unescape(encodeURIComponent(JSON.stringify(p))));
   return window.location.origin+window.location.pathname+'?validate='+encoded;
 }
 
@@ -612,7 +618,11 @@ function checkValidationMode(){
   const token=params.get('validate');
   if(!token)return false;
   try{
-    _vpData=JSON.parse(decodeURIComponent(atob(token)));
+    // Supporte l'ancien format (encodeURIComponent+btoa) et le nouveau (btoa sur UTF-8)
+    let json;
+    try{ json=decodeURIComponent(escape(atob(token))); }
+    catch(e){ json=decodeURIComponent(atob(token)); }
+    _vpData=JSON.parse(json);
     document.getElementById('root').style.display='none';
     document.getElementById('vpage').style.display='block';
     vpRender();
@@ -621,34 +631,57 @@ function checkValidationMode(){
 }
 function vpRender(){
   if(!_vpData)return;
-  document.getElementById('vp-artisan').textContent=_vpData.artisan_nom||'—';
-  document.getElementById('vp-metier').textContent=_vpData.artisan_metier||'—';
-  document.getElementById('vp-ref').textContent=_vpData.ref||'—';
-  document.getElementById('vp-title').textContent=_vpData.titre||'—';
-  document.getElementById('vp-client').textContent=_vpData.client_nom||'—';
-  document.getElementById('vp-total').textContent=money(_vpData.total_ttc||0);
-  if(_vpData.date_validite){
-    document.getElementById('vp-validity').textContent='Valide jusqu\'au '+new Date(_vpData.date_validite).toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric'});
+  const d=_vpData;
+  // Compatibilité ancien format (clés longues) et nouveau (clés courtes)
+  const artisan=d.an||d.artisan_nom||'—';
+  const metier=d.am||d.artisan_metier||'—';
+  const ref=d.r||d.ref||'—';
+  const titre=d.ti||d.titre||'—';
+  const client=d.cn||d.client_nom||'—';
+  const total=d.m||d.total_ttc||0;
+  const validite=d.dv||d.date_validite||'';
+  const tel=d.at||d.artisan_tel||'';
+  // Stocker le tel décodé pour les autres fonctions
+  _vpData._tel=tel;_vpData._artisan=artisan;_vpData._ref=ref;_vpData._titre=titre;_vpData._total=total;
+  document.getElementById('vp-artisan').textContent=artisan;
+  document.getElementById('vp-metier').textContent=metier;
+  document.getElementById('vp-ref').textContent=ref;
+  document.getElementById('vp-title').textContent=titre;
+  document.getElementById('vp-client').textContent=client;
+  document.getElementById('vp-total').textContent=money(total);
+  if(validite){
+    document.getElementById('vp-validity').textContent='Valide jusqu\'au '+new Date(validite).toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric'});
   }
-  document.getElementById('vp-lines').innerHTML=(_vpData.lignes||[]).map(l=>`<div class="vpLine"><span class="vpLineLabel">${esc(l.description)}</span><span class="vpLineAmt">${money(l.montant)}</span></div>`).join('');
+  // Lignes si disponibles (ancien format), sinon message résumé
+  const lines=d.lignes||[];
+  document.getElementById('vp-lines').innerHTML=lines.length
+    ?lines.map(l=>`<div class="vpLine"><span class="vpLineLabel">${esc(l.description||'')}</span><span class="vpLineAmt">${money(l.montant||0)}</span></div>`).join('')
+    :`<div style="padding:10px 0;font-size:13px;color:#888;text-align:center;font-style:italic">Consultez le PDF reçu pour le détail des prestations</div>`;
 }
 window.vpAccepter=function(){
   document.getElementById('vp-devis-view').style.display='none';
   const s=document.getElementById('vp-success');
   s.classList.add('show');
-  if(_vpData)document.getElementById('vp-success-sub').textContent=`Votre acceptation a été envoyée à ${_vpData.artisan_nom}. Il vous contactera très prochainement.`;
+  if(_vpData)document.getElementById('vp-success-sub').textContent=`Votre acceptation a été envoyée à ${_vpData._artisan||_vpData.artisan_nom||'l\'artisan'}. Il vous contactera très prochainement.`;
 };
 window.vpConfirmerWA=function(){
   if(!_vpData)return;
-  const msg=`✅ J'accepte le devis ${_vpData.ref}\n\nTravaux : ${_vpData.titre}\nMontant : ${money(_vpData.total_ttc)}\n\nBonjour ${_vpData.artisan_nom}, je confirme mon accord. Quand pouvez-vous démarrer ?`;
-  const tel=(_vpData.artisan_tel||'').replace(/\s+/g,'').replace(/^0/,'33');
+  const artisan=_vpData._artisan||_vpData.artisan_nom||'l\'artisan';
+  const ref=_vpData._ref||_vpData.ref||'—';
+  const titre=_vpData._titre||_vpData.titre||'—';
+  const total=money(_vpData._total||_vpData.total_ttc||0);
+  const tel=(_vpData._tel||_vpData.artisan_tel||'').replace(/\s+/g,'').replace(/^0/,'33');
+  const msg=`✅ J'accepte le devis ${ref}\n\nTravaux : ${titre}\nMontant : ${total}\n\nBonjour ${artisan}, je confirme mon accord. Quand pouvez-vous démarrer ?`;
   if(tel)window.open('https://wa.me/'+tel+'?text='+encodeURIComponent(msg),'_blank');
   else alert(msg);
 };
 window.vpQuestion=function(){
   if(!_vpData)return;
-  const msg=`Bonjour ${_vpData.artisan_nom}, j'ai une question sur le devis ${_vpData.ref} pour ${_vpData.titre} :`;
-  const tel=(_vpData.artisan_tel||'').replace(/\s+/g,'').replace(/^0/,'33');
+  const artisan=_vpData._artisan||_vpData.artisan_nom||'l\'artisan';
+  const ref=_vpData._ref||_vpData.ref||'—';
+  const titre=_vpData._titre||_vpData.titre||'—';
+  const tel=(_vpData._tel||_vpData.artisan_tel||'').replace(/\s+/g,'').replace(/^0/,'33');
+  const msg=`Bonjour ${artisan}, j'ai une question sur le devis ${ref} pour ${titre} :`;
   if(tel)window.open('https://wa.me/'+tel+'?text='+encodeURIComponent(msg),'_blank');
 };
 
@@ -1384,8 +1417,8 @@ function jsPdfQuote(q){
       doc.setTextColor(20,30,45);
       doc.text(String(it.name).slice(0,60),13,y+4.8);
       doc.text(String(it.qty),122,y+4.8,{align:'center'});
-      doc.text(money(it.price),160,y+4.8,{align:'right'});
-      doc.text(money(it.qty*it.price),196,y+4.8,{align:'right'});
+      doc.text(pdfMoney(it.price),160,y+4.8,{align:'right'});
+      doc.text(pdfMoney(it.qty*it.price),196,y+4.8,{align:'right'});
       y+=7;
     });
   });
@@ -1396,7 +1429,7 @@ function jsPdfQuote(q){
     doc.setTextColor(255,255,255);doc.rect(122,y,43,8,'F');
     doc.setFont('helvetica','bold');doc.text(r[0],125,y+5.2);
     doc.setTextColor(11,31,68);doc.setFont('helvetica','normal');doc.rect(165,y,35,8);
-    doc.text(money(r[1]),196,y+5.2,{align:'right'});
+    doc.text(pdfMoney(r[1]),196,y+5.2,{align:'right'});
     y+=8;
   });
   y+=8;
@@ -1451,12 +1484,27 @@ window.shareQuote=async function(id){
   toast('PDF téléchargé — partagez-le manuellement.');
   setTimeout(()=>window.open('https://wa.me/?text='+encodeURIComponent(text),'_blank'),1600);
 };
-window.emailQuote=function(id){
+window.emailQuote=async function(id){
   const q=state.quotes.find(x=>x.id===id);if(!q)return;
-  downloadPdf(id);
+  const doc=jsPdfQuote(q);if(!doc)return;
   const label=q.type==='facture'?'Facture':'Devis';
-  const body=`Bonjour,\n\nVeuillez trouver ci-joint votre ${label.toLowerCase()} ${q.number} d'un montant de ${money(q.totalTTC)} TTC.\n\nCordialement,\n${state.company.name||''}`;
-  setTimeout(()=>{location.href=`mailto:${q.client?.email||''}?subject=${encodeURIComponent(label+' '+q.number)}&body=${encodeURIComponent(body)}`;},900);
+  const subject=label+' '+q.number;
+  const bodyText=`Bonjour,\n\nVeuillez trouver ci-joint votre ${label.toLowerCase()} ${q.number} d'un montant de ${money(q.totalTTC)} TTC.\n\nCordialement,\n${state.company.name||state.company.firstName||''}`;
+  // Sur mobile : Web Share API avec fichier PDF joint (fonctionne avec Mail, Gmail…)
+  try{
+    const blob=doc.output('blob');
+    const file=new File([blob],q.number+'.pdf',{type:'application/pdf'});
+    if(navigator.canShare&&navigator.canShare({files:[file]})){
+      await navigator.share({title:subject,text:bodyText,files:[file]});
+      return;
+    }
+  }catch(e){}
+  // Fallback bureau : télécharger le PDF puis ouvrir l'email
+  doc.save(q.number+'.pdf');
+  toast('PDF téléchargé — joignez-le manuellement à votre email');
+  setTimeout(()=>{
+    location.href=`mailto:${q.client?.email||''}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyText)}`;
+  },1200);
 };
 
 /* ── DEMO ── */
